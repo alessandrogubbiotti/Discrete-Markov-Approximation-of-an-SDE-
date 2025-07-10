@@ -8,12 +8,12 @@
 
 #define IDX(x, y) ((y) * Nx + (x))
 
-int Nx =1000; 
-int  Ny = 1000; 
-int  N_particles = 100;  
+int Nx =100; 
+int  Ny = 100; 
+int  N_particles = 5000;  
 int T_max = 10000000;
-int snapshot_interval = 100000;
-
+int snapshot_interval = 1000;
+ 
 double beta = 1 ;
 
 // Allocate flat arrays
@@ -21,8 +21,6 @@ double  *V, *mu, *gradVx, *gradVy, *cx, *cy, *mucx, *mucy, *divergence;
 
 
 typedef struct{
-	int time; 
-	int particle_id; 
 	int x; 
 	int y; 
 } Particle_State;
@@ -95,7 +93,7 @@ void normalize_mu() {
 }
 
 void compute_fields() {
-    compute_mu(V);
+    compute_mu();
     for (int y = 0; y < Ny; y++) {
         for (int x = 0; x < Nx; x++) {
             int xp = (x + 1) % Nx, xm = (x - 1 + Nx) % Nx;
@@ -142,6 +140,7 @@ void write_flat_csv(const char *filename, double *data) {
 //}
 //
 void simulate() {
+	int Marker = 60; 
     for (int i = 0; i < N_particles; i++) {
         particles[i].x = gsl_rng_uniform_int(rng, Nx);
         particles[i].y = gsl_rng_uniform_int(rng, Ny);
@@ -153,8 +152,8 @@ FILE *traj_file = fopen("trajectory.bin", "wb");
 		return; 
 	}
 	for (int t = 0; t <= T_max; t++) {
-        for (int i = 0; i < N_particles; i++) {
-		particles[i].time = t; 
+
+        for (int i = 0; i < N_particles; i++) { 
             int dir = gsl_rng_uniform_int(rng, 4);
             int x = particles[i].x;
             int y = particles[i].y; 
@@ -171,7 +170,6 @@ FILE *traj_file = fopen("trajectory.bin", "wb");
                 particles[i].x = xn;
                 particles[i].y  = yn;
             }
-         fwrite( particles, sizeof(Particle_State), N_particles, traj_file); 
         }
 
      //   if (t % snapshot_interval == 0) {
@@ -188,7 +186,12 @@ FILE *traj_file = fopen("trajectory.bin", "wb");
            // sprintf(fname, "empirical_t%04d.csv", t);
            // write_flat_csv(fname, empirical);
            // free(hist); free(empirical);
-        }
+	if( t % snapshot_interval == 0){
+		fwrite(&t, sizeof(int), 1 ,traj_file); 	
+   		fwrite( particles, sizeof(Particle_State), N_particles, traj_file);
+		fwrite(&Marker, sizeof(int),1, traj_file);  
+       	 }
+	}
  
 
     fclose(traj_file); 
@@ -196,6 +199,7 @@ FILE *traj_file = fopen("trajectory.bin", "wb");
 
 int main() {
  //   read_config("config.txt");
+	printf("DEBUG %zu\n", sizeof(Particle_State));
     gsl_rng_env_setup();
     rng = gsl_rng_alloc(gsl_rng_mt19937);
     V = malloc(Nx * Ny * sizeof(double));
