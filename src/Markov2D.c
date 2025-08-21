@@ -2,18 +2,53 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //// 2025-08-15 Main changes that need to be done: 
-//// 0) A good normalization for the empirical current
-//// 1) Write the parameters in the json output file and make the scripts read from there. Then ask to the user if he wishes to save the results or visualize them 
+//// 0) A good normalization for the empirical current, add beta to the output directory name
+//// 1) Write the parameters in the json output file and make the scripts read from there. Then ask to the user 
+//// if he wishes to save the results or visualize them 
 //// 2) Add an estimation of c and V and compare it with norm infty, 1 and 2, with our actual fields. 
 //// 3) Idem for the invariant measure. This is in light to do it when we do not know the quantities 
 //// 4) If possible, estimate the mixing time and see that the non-reversible dynamics is faster
 ////
 //// What I am going to do next is to estimate the dissipation potentials 
-//// In a totally different perspective, I should also write a stream field, maybe using the other program that I have made. 
+//// In a totally different perspective, I should also write a stream field, maybe using the other program that
+//// I have made. 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// THE INPUT VARIABLES ARE 
+// N The number of sites for each dimension. We consider an NxN grid with periodic boundary conditions
+// L The macroscopic length of the grid. It has been not used  untill now 
+// T Macroscopic time
+// N_particles is the number of particles in the simulation
+// 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// THE RATES ARE OF THE FORM 
+// (1 + c(a,b)) e^{ -beta/2 (V(b) - V(a)}, 
+// for each a and b in the grid. and c antisymmetric 
+// and we assume that sum_{y} c(x,y) e^{ -\beta/2(V(y) + V(x))}  = 0
+// Untill now, the only set of examples that I have are of the form 
+// c is divergence free and orthogonal to V in the following sense  
+// for each a, b in the grid, either V(b) - V(a) = 0 or c(a,b) = 0
+//////////////////////////////////////////////////////////////////////////
+// To save  funcitons of the directed edges we use the struct Vector
+// To sace antisymmetric functions of the edges we use Form and we take the convention to 
+// that along the x axis we take the sign that the funciton has on the edge in the east direction, and for the
+// y-axis along the north direction
+// To obtain the south direction, for instance, we should look at the point one unit to the south and take the 
+// negative of its y-component.
+// In this way we are able to plot currents as vectors 
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//// Since a diffusive rescaling should lead to an Ito diffusion for each single particle
+//// we take a macroscopic resolution in which the macroscopic unit of time,
+//// composed by N*N units of micrscopic time, in resolution subintervals (Have to change this now)
+//// Therefore
+////
+////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 
 
@@ -31,71 +66,18 @@
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>   // For PATH_MAX
-
+#include "analysis.h"
+#include "Markov2D.h"
+#include "input_output.h"
 
 #define MAX_LINE 256
 
-// We are in a Torus N*N. 
-// This funciton is used so that (x - 1, y), (x+1, y ), (x, y - 1 ) and (x, y + 1),  
-// are alwasys the neighbours of the point, even if x = 0, or N-1, or y = 0 or N-1...
-static inline int IDX(int x, int y, int N) {
-    x %= N;
-    y %= N;
-    if (x < 0) x += N;
-    if (y < 0) y += N;
-    return x * N + y;
-}; 
 
-// To perform the square power of two long double variables
-inline long double squarel(long double v) {
-    return v * v;
-}
+
 
 gsl_rng *rng; ///GSLsetyup
 
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////// STRUCTURES ////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Configuration contains the input required by the prpogram
-typedef struct { 
-	int N; // scaling parameter
-	double T; // Macroscopic time 
-	double L;  // Macroscopic length
-	int N_particles; // Number of particles
-	double beta; // Inverse temperature 
-	int resolution; // The discretization step 
-	} Configuration; 
-
-
-// A Vector at a point [x][y] is a fujnction of the outgoing edges. 
-typedef struct{
-	double north; 
-	double south; 
-	double east; 
-	double west; 
-} Vector;
-
-// A Form is an antisymmetric funciton of the edges. 
-typedef struct{
-	long double x; 
-	long double y; 
-} Form;
-
-// An activity is a symmetric function of the edges
-typedef struct{
-	long double x; 
-	long double y;
-} Activity;
-
-// Particle_State gives the state of a particle (position)
-typedef struct{
-	int x; 
-	int y; 
-} Particle_State;
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -103,7 +85,26 @@ typedef struct{
 ////////////////////////////////// HEADERS ////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void current_distances(Form *a, Form *b, int N);
+void typical_current(Form *J_typ, Vector *rates, double *empirical_measure,  double time_step, int N  ); 
 
+void set_skew_symm_current(Form *skew_symm_current, long double *rho, Form *eq_current,  double dt, int N); 
+
+void diagnose_kinetic_cost_variants(Form *empirical_current,
+                                    Form *eq_current,
+                                    Activity *eq_activity,
+                                    long double *rho,
+                        		double dt,   
+			          int N);
+
+
+void normalize_empirical_flow(Vector *empirical_flow, int resolution,  int N_particles,  int NN  );
+void normalize_empirical_measure(double *empirical_measure, int resolution,  int N_particles,  int NN  ); 
+void diagnose_currents(long double *m_beta, long double *rho,  Form *empirical_current, Form *eq_current, int N ); 
+
+void divide_vector(Vector *vec, double scalar, int N );
+void divide_form(Form *curr, long double scalar, int N);
+ 
 void plot_3d_density(const char *dirname, int N_particles, int N);
 void animate_particles(const char *dirname, int num_particles, int grid_size);
 void plot_density_and_current(const char *dirname, int N_particles, int N);
@@ -112,49 +113,13 @@ void plot_density_and_current(const char *dirname, int N_particles, int N);
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-typedef int (*ConfigSetter)(Configuration *conf, const char *value); // A function that associates a field of Configuration to a value will belong to this type   
-
-typedef struct {
-    const char *key;
-    ConfigSetter setter;
-} ConfigEntry; // An element of this structure will associate to a key (the name of the Field of Configuration), the associated function that assigns the value of that field 
-
-
-
-int set_N(Configuration *conf, const char *value); 
-int set_T(Configuration *conf, const char *value); 
-int set_L(Configuration *conf, const char *value); 
-int set_N_particles(Configuration *conf, const char *value); 
-int set_resolution(Configuration *conf, const char *value); 
-int set_beta(Configuration *conf, const char *value); 
-
-ConfigEntry config_table[] = {
-    {"N", set_N},
-    {"T", set_T},
-    {"L", set_L},
-    {"N_particles", set_N_particles}, 
-    {"resolution", set_resolution},
-    {"beta", set_beta}, 
-    {NULL, NULL} //A sentinel indicating the end of the structure. 
-};
-
 
  
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////// READING THE INPUTS /////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void read_config_file(Configuration *conf, const char *filename); 
-int is_comment_or_blank(const char *line);
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////  OUTPUT DIRECTORIES AND PLOTS ///////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-void print_config_to_screen(Configuration conf); 	
-void create_output_directory(const Configuration conf, char *dirname_out, size_t len); 
-void save_config_to_json(const Configuration conf, const char *dirname); 
 
 // PLOT A VECTOR FIELD (ONLY THE ANTISYMMETRIC PART) It requirest the script in plot_vectors.py
 void save_and_plot_vectors(Vector* vecs, int N, const char* name, double sigma, int skip, const char* python_script);
@@ -185,7 +150,7 @@ void density( long double *density, long double *m_beta , double *empirical_meas
 
 long double entropy(long double r );
 long double relative_entropy( long double *rho, long double *m_beta, int N );
-long double kinetic_cost(Form *j, Activity *eq_activity, Form *eq_current, long double *rho,  int  N  ); 
+long double kinetic_cost(Form *j, Activity *eq_activity, Form *eq_current, long double *rho, double time,  int  N  ); 
 long double dissipation_potential( Activity *eq_activity, long double *rho,  int N); 
 
 void equilibrium_current(Form *eq_curr, long double *m_beta, Vector *rates, int N  ); 
@@ -261,7 +226,7 @@ int main() {
 		rates[x] = &rates_flat[N*x];
 	}	
 	initialize_rates(rates, dV , c, beta, N ); 
-	save_and_plot_vectors(rates_flat, N, "rates", 0.05, 2, "plot_vectors.py" ); 
+//	save_and_plot_vectors(rates_flat, N, "rates", 0.05, 2, "plot_vectors.py" ); 
 	// Initial Condition of the particles 	
 
 	Particle_State *particles;
@@ -281,13 +246,14 @@ int main() {
 	Activity *eq_activity = calloc(N*N ,sizeof(Activity)); 
 	// The equilibrium current
 	Form *eq_current = calloc(N*N, sizeof(Form));
-	
+	Form *skew_symm_current = malloc(N*N*sizeof(Form)); 
+	Form *null_current = calloc(N*N, sizeof(Form)); 
 	invariant_measure( m_beta, V, beta , N); 
 	equilibrium_activity(eq_activity, m_beta, rates_flat, N); 
 	equilibrium_current(eq_current, m_beta, rates_flat, N); 
    	
-	save_and_plot_forms( dV, N, "GradV", 2, "plot_forms.py"); 
-	save_and_plot_forms( c, N, "c", 2, "plot_forms.py"); 
+//	save_and_plot_forms( dV, N, "GradV", 2, "plot_forms.py"); 
+//	save_and_plot_forms( c, N, "c", 2, "plot_forms.py"); 
 
 
 	
@@ -295,14 +261,17 @@ int main() {
 	///////////// SIMULATION AND STATISTICS ////////////////
 	////////////////////////////////////////////////////////
 
-
+int count = 0; 
 
 	
 	// We start by allocating the empirical quantities we will use 
-	
+	//DEBUG TYPICAL CURRENT 
+	Form *J_typ = malloc(N*N*sizeof(Form)); //typical_current 
 	Form *empirical_current = malloc(N*N*sizeof(Form)); 
 	Vector *empirical_flow = malloc(N*N*sizeof(Vector)); 
+	Vector *cumulative_empirical_flow = malloc(N*N*sizeof(Vector)); 
 	double *empirical_measure = malloc(N*N*sizeof(double)); 	
+	double *cumulative_empirical_measure = malloc(N*N*sizeof(double)); 	
 	
 	// Dissipation quantities 
 	long double entropy = 0.0L, cost = 0.0L , potential = 0.0L; 
@@ -344,8 +313,83 @@ int main() {
 		// It goes on for 1/resolution macroscopic unit of time, that is for N*N/resolution  microscopic units of time 
 		simulate( rates, particles, empirical_measure, empirical_flow, resolution, N_particles, N); 
 		
-		// Compute some statistics 
-		
+// DIAGNOSTIC: compare K(a) for q = eq_current * (rho_i + rho_j) and K_true for J(mu)
+long double S_j2 = 0.0L, S_jq = 0.0L, S_q2 = 0.0L;
+long double comp_j2 = 0.0L, comp_jq = 0.0L, comp_q2 = 0.0L;
+long double S_j2_true = 0.0L, S_jq_true = 0.0L, S_q2_true = 0.0L; // not used but kept
+long double total_j2 = 0.0L, comp_total = 0.0L;
+int a = (N*N)/resolution; 
+for (int x = 0; x < N; ++x) {
+  for (int y = 0; y < N; ++y) {
+    int idx = IDX(x,y,N);
+    // horizontal edge: (x,y) -> (x, y+1)
+    int idx_r = IDX(x,(y+1)%N,N);
+    long double mu_i = (long double) empirical_measure[idx];
+    long double mu_j = (long double) empirical_measure[idx_r];
+
+    // exact expected current on that edge (J(mu)):
+    long double rate_east_i = (long double) rates[x][y].east;
+    long double rate_west_j = (long double) rates[x][(y+1)%N].west;
+    long double Jmu_x = (mu_i*rate_east_i - mu_j*rate_west_j)*a;
+
+    // your approximate q: eq_current * (rho_i + rho_j)
+    long double qx = eq_current[idx].x * (rho[idx] + rho[idx_r])*a; // if you multiply by alpha later
+
+    long double jx = empirical_current[idx].x;
+    long double Ax = eq_activity[idx].x > 0.0L ? eq_activity[idx].x : 1e-300L;
+
+    kahan_add(jx*jx/Ax, &S_j2, &comp_j2);
+    kahan_add(jx*qx/Ax, &S_jq, &comp_jq);
+    kahan_add(qx*qx/Ax, &S_q2, &comp_q2);
+
+    // also accumulate true residual sums if you want to inspect (with Jmu)
+    kahan_add(jx*jx/Ax, &S_j2_true, &comp_total);
+    kahan_add(jx*Jmu_x/Ax, &S_jq_true, &comp_total);
+    kahan_add(Jmu_x*Jmu_x/Ax, &S_q2_true, &comp_total);
+
+    // vertical edge: (x,y) -> (x+1,y)
+    int idx_u = IDX((x+1)%N,y,N);
+    mu_i = (long double) empirical_measure[idx];
+    mu_j = (long double) empirical_measure[idx_u];
+    long double rate_north_i = (long double) rates[x][y].north;
+    long double rate_south_j = (long double) rates[(x+1)%N][y].south;
+    long double Jmu_y = (mu_i*rate_north_i - mu_j*rate_south_j)*a;
+
+    long double qy = eq_current[idx].y * (rho[idx] + rho[idx_u])*a;
+    long double jy = empirical_current[idx].y;
+    long double Ay = eq_activity[idx].y > 0.0L ? eq_activity[idx].y : 1e-300L;
+
+    kahan_add(jy*jy/Ay, &S_j2, &comp_j2);
+    kahan_add(jy*qy/Ay, &S_jq, &comp_jq);
+    kahan_add(qy*qy/Ay, &S_q2, &comp_q2);
+
+    kahan_add(jy*jy/Ay, &S_j2_true, &comp_total);
+    kahan_add(jy*Jmu_y/Ay, &S_jq_true, &comp_total);
+    kahan_add(Jmu_y*Jmu_y/Ay, &S_q2_true, &comp_total);
+  }
+}
+// algebra for q-ansatz
+long double a_star = (S_q2 > 0.0L) ? (S_jq / S_q2) : 0.0L;
+printf("DIAG_S: S_j2=%.12Lg  S_jq=%.12Lg  S_q2=%.12Lg  a* = %.6Lg\n",
+       S_j2, S_jq, S_q2, a_star);
+
+// Print predicted K for alphas you used:
+long double alphas[] = {0.0L, 0.25L, 0.5L, 1.0L};
+for (int ia = 0; ia < 4; ++ia) {
+  long double a = alphas[ia];
+  long double S_a = S_j2 - 2.0L*a*S_jq + a*a*S_q2;
+  long double K_a = 0.5L * S_a;
+  printf("predicted K(alpha=%.2Lf) = %.12Lg\n", a, K_a);
+}
+
+// Also compute K_true where we subtract exact J(mu):
+long double S_true = S_j2_true - 2.0L*S_jq_true + S_q2_true;
+long double K_true = 0.5L * S_true;
+printf("K_true (subtract exact J(mu)) = %.12Lg\n", K_true);
+
+
+		diagnose_kinetic_cost_variants( empirical_current, eq_current, eq_activity, rho, (double) resolution,  N); 
+
 		double t_macro = t/((double )resolution); 
 		// Here we write the trajectory 
 		fwrite(&t_macro, sizeof(double), 1 ,traj_file); 	
@@ -357,14 +401,42 @@ int main() {
 		fwrite( empirical_flow, sizeof(Vector), N*N, stats);
 		fwrite(&Marker, sizeof(int),1, stats);  
 		// Here we put the entropy dissipation inequality for the quadratic entropy 
-
+		
 		// Here we put the entropy dissipation inequality for the Poissonian structure  
+		
+		normalize_empirical_measure(empirical_measure, resolution, N_particles, N*N ); 
+		density(rho, m_beta, empirical_measure, N );
+
+		normalize_empirical_flow(empirical_flow, N_particles, resolution,  N*N); 
 		flow_to_current(empirical_current, empirical_flow,N); 	
-		density(rho, m_beta, empirical_measure, N ); 
+		
+
+		
+
 		entropy = relative_entropy( rho, m_beta, N); 
-		cost += kinetic_cost( empirical_current, eq_activity, eq_current, rho, N)/((double)resolution); 
-		potential += dissipation_potential( eq_activity, rho, N)/((double)resolution); 
+		cost += kinetic_cost( empirical_current, eq_activity, eq_current, rho , N*N/resolution , N) * (N*N)/((long double)resolution); 
+		potential += dissipation_potential( eq_activity, rho, N) * (N*N)/((long double)resolution); 
 		fprintf(dissipation, "%f %.5Lf %.5Lf %.5Lf\n",  t_macro, entropy, cost, potential); 		
+		
+		set_skew_symm_current(skew_symm_current, rho,eq_current, (N*N)/(double)resolution ,N); 
+		typical_current( J_typ,rates_flat,  empirical_measure, /*1/((double) resolution)*/ N*N /(double)resolution,  N  ); 
+		current_distances(empirical_current, skew_symm_current, N );
+		if( count == 10 ){
+			count = 0;  
+			save_and_plot_forms(empirical_current, N, "empirical current", 2 , "plot_forms.py" ); 
+			save_and_plot_forms(J_typ, N, "typical current  current", 2 , "plot_forms.py" ); 
+			save_and_plot_forms(skew_symm_current, N, "skew symmetric current", 2 , "plot_forms.py" ); 
+			save_and_plot_forms(eq_current, N, "equilibrium current", 2 , "plot_forms.py" ); 
+			double rho_sum = 0; 
+			for(int a = 0; a < N; a++ ){
+				for(int b = 0; b < N; b++){
+					rho_sum += m_beta[IDX(a,b,N)] * rho[IDX(a,b, N )]; 
+				}
+			}
+			printf( "\n\n The total sum of m_beta * rho is  %f \n\n", rho_sum); 
+			current_distances(empirical_current, null_current, N ); 
+		}
+		count++; 
 		// I set again to zero the quantities, that will be recomputed in the dext loop. 
 		}
 
@@ -389,15 +461,17 @@ int main() {
 	free(eq_current); free(eq_activity);  free(m_beta);  
 	// Empirical Quantities
 	free(empirical_flow); free(empirical_measure); free(empirical_current);  
-
- 
+	free(J_typ); free(skew_symm_current); free(null_current);
+	free(cumulative_empirical_flow); free(cumulative_empirical_measure);   
 	/////////////////////////////////////////////////////////////////////////
 	///////////// SYSTEM CALLS TO PLOT STUFF ////////////////////////////////
 	/////////////////////////////////////////////////////////////////////////
 	
-	plot_density_and_current(dirname, N_particles, N);
-        plot_3d_density(dirname, N_particles, N); 
-	animate_particles(dirname, N_particles , N);
+//	plot_density_and_current(dirname, N_particles, N);
+//       plot_3d_density(dirname, N_particles, N); 
+//	animate_particles(dirname, N_particles , N);
+
+
 
 //	printf(" Do you want to plot the trajectories? \n\nYes: 1\nNo:0\n\n"); 
 //	int choice; 
@@ -427,7 +501,7 @@ int main() {
 
 void simulate(Vector **rates,  Particle_State *particles, double *empirical_measure, Vector *empirical_flow, int resolution, int N_particles, int N ) {
 	clock_t start_loop, end_loop; //The time an iteration takes 
-	int t_simulation = (int ) N*N/((double ) resolution);  
+	int t_simulation = N*N/resolution;  
 ///////////////////////////////////////////////////////////////////////	
 //////////////////// WE INITIALIZE TO 0 THE EMPIRICAL QUANTITIES //////	
 ///////////////////////////////////////////////////////////////////////
@@ -445,7 +519,7 @@ void simulate(Vector **rates,  Particle_State *particles, double *empirical_meas
 		  	double rate;
 		  	empirical_measure[IDX(x,y,N)] = empirical_measure[IDX(x,y,N)] + 1;  // Update the empirical measure  
 		  	rate = rates[x][y].north  + rates[x][y].south + rates[x][y].east + rates[x][y].west; 
-		  	if(  gsl_rng_uniform(rng) <  exp( - rate /(double)(resolution) ) ){ // We only move when the clock rings 
+		  	if(  gsl_rng_uniform(rng) < 1 -  exp( - rate /(double)(resolution) ) ){ // We only move when the clock rings 
 		  	    // Since the Macroscopic corresponds to T*N^2 discrete time steps,I discretize the uniti  macroscopic interval into resolution ones 
 		  	    	int xn = x, yn = y;
 		  	        double  random = gsl_rng_uniform(rng);
@@ -493,8 +567,14 @@ void simulate(Vector **rates,  Particle_State *particles, double *empirical_meas
 
 void initialize_particles( Particle_State *particles, int N_particles, int N ){
 	 for (int i = 0; i < N_particles; i++) {
- 	       particles[i].x = (N-1)/2;
+ 	      if( i < N_particles/2 ){
+	       particles[i].x = (N-1)/2;
  	       particles[i].y = (N-1)/4;
+		}
+		else {
+	       particles[i].x = (N-1)/2;
+ 	       particles[i].y = 3*(N-1)/4;		
+		}
 // 	       particles[i].x = gsl_rng_uniform_int(rng, N);
 // 	       particles[i].y = gsl_rng_uniform_int(rng, N);
    	 }
@@ -614,14 +694,7 @@ void double_well(  double *V, Form *c,int N){
 }
 
 
-void  d(Form *dV, double *V, int N){
-	for(int x = 0; x < N; x++){
-		for(int y = 0; y < N; y++ ){
-			dV[IDX(x,y, N)].x = V[IDX(x  , y +1, N )]  - V[IDX(x,y,N)]; 
-			dV[IDX(x,y,N)].y = V[IDX(x +1,y, N )] - V[ IDX(x,y,N)]; 
-		}
-	} 
-}
+
 
 
 
@@ -640,15 +713,6 @@ void  d(Form *dV, double *V, int N){
 ////////////// VISUALIZATION OF THE CHOICES       ///////////////
 //////////////////////////////////////////////////////////////////
 
-	void print_config_to_screen(Configuration conf){	
-         printf("You have made the following choices: \n");
-	 printf("   N: %d,\n\n",conf.N);
-   	 printf("   T: %f \n\n", conf.T);
-   	 printf("   L: %f \n\n", conf.L);
-	 printf("   N_simulations: %d \n\n", conf.N_particles);
-  	 printf("   Resolution: %d,\n\n", conf.resolution);
-	 printf("   Beta =  %f,\n\n", conf.beta); 
-	}
 
 
 //////////////////////////////////////////////////////////////////
@@ -696,137 +760,11 @@ void print_rates_and_invariant_measure( double *V, Vector *rates, double beta, i
 //////////////////////////////////////////////////////////////////
 
 
-void create_output_directory(const Configuration conf, char *dirname_out, size_t len) {
-    snprintf(dirname_out, len, "results_N%d_T%.1lf_Nparticles%d",
-             conf.N, conf.T, conf.N_particles);
-
-    if (mkdir(dirname_out, 0755) && errno != EEXIST) {
-        perror("mkdir failed");
-        exit(EXIT_FAILURE);
-    }
-}
-
-void save_config_to_json(const Configuration conf, const char *dirname) {
-    char filepath[512];
-    snprintf(filepath, sizeof(filepath), "%s/config.json", dirname);
-
-    FILE *fp = fopen(filepath, "w");
-    if (!fp) {
-        perror("Error writing config.json");
-        return;
-    }
-
-    fprintf(fp, "{\n");
-    fprintf(fp, "  \"N\": %d,\n", conf.N);
-    fprintf(fp, "  \"T\": %.6f,\n", conf.T);
-    fprintf(fp, "  \"L\": %.6f,\n", conf.L);
-    fprintf(fp, "  \"N_particles\": %d,\n", conf.N_particles);
-    fprintf(fp, "  \"beta\": %.6f,\n", conf.beta);
-    fprintf(fp, "  \"resolution\": %d,\n", conf.resolution);
-    fprintf(fp, "}\n");
-
-    fclose(fp);
-}
-
 
 
 //////////////////////////////////////////////////////////////////
 /////// FUNCTIONS FOR READING THE INPUT PARAMETERS ///////////////
 //////////////////////////////////////////////////////////////////
-
-
-
-
-void read_config_file(Configuration *conf, const char *filename) {
-    FILE *file = fopen(filename, "r");
-    if (!file) {
-        perror("Error opening config file");
-        exit(EXIT_FAILURE);
-    }
-
-    char line[MAX_LINE], key[64], value[128];
-    while (fgets(line, sizeof(line), file)) {
-        if (is_comment_or_blank(line)) continue;
-        if (sscanf(line, "%63[^=]=%127s", key, value) != 2) continue;
-
-        int found = 0;
-        for (int i = 0; config_table[i].key; i++) {
-            if (strcmp(config_table[i].key, key) == 0) {
-                if (config_table[i].setter(conf, value) != 0) {
-                    fprintf(stderr, "Invalid value for key: %s\n", key);
-                    exit(EXIT_FAILURE);
-                }
-                found = 1;
-                break;
-            }
-        }
-
-        if (!found) {
-            fprintf(stderr, "Unknown configuration key: %s\n", key);
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    fclose(file);
-}
-
-
-int is_comment_or_blank(const char *line) {
-    // Skip leading whitespace
-    while (isspace(*line)) line++;
-
-    return (*line == '#' || *line == '/' || *line == '\0' || *line == '\n');
-}
-
-
-int set_N(Configuration *conf, const char *value) {
-      printf("set_T called with value='%s'\n", value);
-    int v = atoi(value);
-    if (v <= 0) return -1;
-    printf(" The value of N: %d", v); 
-    conf->N = v;
-    printf(" The value of N: %d", conf -> N); 
-    return 0;
-}
-
-int set_T(Configuration *conf, const char *value) {
-    float v = atof(value);
-    if (v <= 0.0f) return -1;
-    conf->T = v;
-    return 0;
-}
-
-int set_L(Configuration *conf, const char *value) {
-    float v = atof(value);
-    if (v <= 0.0f) return -1;
-    conf->L = v;
-    return 0;
-}
-
-int set_N_particles(Configuration *conf, const char *value) {
-    int v = atoi(value);
-    if (v <= 0) return -1;
-    conf->N_particles = v;
-    return 0;
-}
-
-int set_resolution(Configuration *conf, const char *value) {
-    int v = atoi(value);
-    if (v <= 0) return -1;
-    conf->resolution = v;
-    return 0;
-}
-
-int set_beta(Configuration *conf, const char *value){
-	float v = atof(value); 
-	if( v <= 0) return - 1; 
-	conf -> beta = v; 
-	return 0; 
-}
-
-
-
-
 
 
 
@@ -879,17 +817,15 @@ void check_orthogonality( Form *c , double *V, double beta, int N){
 		
 }
 
-
 void invariant_measure(long double *m_beta , double *V,  double beta, int N){
-	// The normalization constant is not 1. 
-	long double Z = 0; 
-	for(int i = 0; i < N*N; i++){
-			Z += exp(-beta*V[i]); 
-	}
-	// The measure
-	for(int i = 0; i < N*N ; i++){
-		m_beta[i] = (N * N )* exp( -(long double)beta* V[ i] )/Z;  
-	}
+    const int NN = N * N;
+    double Vmin = 0.0;
+    long double S = stable_partition_sum(V, beta, NN, &Vmin); // Kahan + shift
+
+    // m_beta[i] = exp(-beta (V[i] - Vmin)) / S  -> sums to 1
+    for (int i = 0; i < NN; ++i) {
+        m_beta[i] = expl(-(long double)beta * ((long double)V[i] - (long double)Vmin)) / S;
+    }
 }
 
 void density( long double *density, long double *m_beta ,  double  *empirical_measure, int N ){
@@ -914,16 +850,16 @@ void equilibrium_flow(Vector **eq_flow, double empirical_measure, long double **
 void equilibrium_current(Form *eq_curr, long double *m_beta, Vector *rates, int N  ){
 	for(int x = 0; x < N; x++){
 		for(int y = 0; y < N; y++){
-			eq_curr[IDX(x,y,N)].y = m_beta[IDX(x,y,N)] * rates[IDX(x,y, N)].north -  m_beta[IDX(x+1,y,N)] * rates[IDX(x +1,y,N)].south; 
-			eq_curr[IDX(x,y,N)].x = m_beta[IDX(x,y,N)] * rates[IDX(x,y,N)].east - m_beta[IDX(x,y+1,N)] * rates[IDX(x,y+1, N)].west; 
+			eq_curr[IDX(x,y,N)].y = (m_beta[IDX(x,y,N)] * rates[IDX(x,y, N)].north -  m_beta[IDX(x+1,y,N)] * rates[IDX(x +1,y,N)].south); 
+			eq_curr[IDX(x,y,N)].x = (m_beta[IDX(x,y,N)] * rates[IDX(x,y,N)].east - m_beta[IDX(x,y+1,N)] * rates[IDX(x,y+1, N)].west); 
 		}
 	}
 }
 void equilibrium_activity(Activity *eq_activity, long double *m_beta, Vector *rates, int N  ){
 	for(int x = 0; x < N; x++){
 		for(int y = 0; y < N; y++){
-			eq_activity[IDX(x, y, N )].y = m_beta[IDX(x,y,N)] * rates[IDX(x,y, N)].north  +  m_beta[IDX(x+1,y,N)] * rates[IDX(x +1,y,N)].south;
-			eq_activity[IDX(x,y,N)].x = m_beta[IDX(x,y,N)] * rates[IDX(x,y,N)].east  +  m_beta[IDX(x,y+1,N)] * rates[IDX(x,y+1, N)].west;
+			eq_activity[IDX(x, y, N )].y = (m_beta[IDX(x,y,N)] * rates[IDX(x,y, N)].north  +  m_beta[IDX(x+1,y,N)] * rates[IDX(x +1,y,N)].south)/2.0L;
+			eq_activity[IDX(x,y,N)].x = (m_beta[IDX(x,y,N)] * rates[IDX(x,y,N)].east  +  m_beta[IDX(x,y+1,N)] * rates[IDX(x,y+1, N)].west)/2.0L;
 		}
 	}
 }
@@ -938,6 +874,14 @@ void equilibrium_activity(Activity *eq_activity, long double *m_beta, Vector *ra
 ////////////////////////////////////////////////////////////////////////////////////////////
 
 
+void  d(Form *dV, double *V, int N){
+	for(int x = 0; x < N; x++){
+		for(int y = 0; y < N; y++ ){
+			dV[IDX(x,y, N)].x = V[IDX(x  , y +1, N )]  - V[IDX(x,y,N)]; 
+			dV[IDX(x,y,N)].y = V[IDX(x +1,y, N )] - V[ IDX(x,y,N)]; 
+		}
+	} 
+}
 
 
 
@@ -1013,37 +957,93 @@ void flow_to_current(Form *current, Vector *flow,  int N ){
 ////////////////////////////////////////////////////////////////////////////////////////////
 
 long double entropy(long double r ){
-	return r*r; 
+	return (r - 1)*(r - 1); 
 }
 
-long double relative_entropy( long double  *rho, long double *m_beta, int N ){
-	double entro = 0; 
-	for(int i = 0; i < N*N; i++){
-		entro += entropy(rho[i]) * m_beta[i];  	
-	}
-	return entro;  
+/// Il dt sta fuori o sta dentro??????
+long double kinetic_cost(Form *j, Activity *eq_activity, Form *eq_current, long double *rho,  double  dt, int N){
+    long double sum = 0.0L, comp = 0.0L;
+
+    for(int x = 0; x < N; x++){
+        for(int y = 0; y < N; y++){
+            // horizontal edge (x, y) -> (x, y+1)
+            long double avg_rho_x = 0.5L *  (rho[IDX(x,y,N)] + rho[IDX(x, y+1, N)]);
+            long double res_x = j[IDX(x,y,N)].x - eq_current[IDX(x,y,N)].x * avg_rho_x * dt;
+            long double Ax = eq_activity[IDX(x,y,N)].x;
+            long double term_x = (Ax > 0.0L) ? (res_x*res_x)/Ax : 0.0L;
+
+            // vertical edge (x, y) -> (x+1, y)
+            long double avg_rho_y = 0.5L * (rho[IDX(x,y,N)] + rho[IDX(x+1, y, N)]);
+            long double res_y = j[IDX(x,y,N)].y - eq_current[IDX(x,y,N)].y * avg_rho_y * dt ;
+            long double Ay = eq_activity[IDX(x,y,N)].y;
+            long double term_y = (Ay > 0.0L) ? (res_y*res_y)/Ay : 0.0L;
+
+            kahan_add(term_x + term_y, &sum, &comp);
+        }
+    }
+    return 0.5L * sum;
 }
 
-long double kinetic_cost(Form *j, Activity *eq_activity, Form *eq_current, long double *rho,  int  N  ){
-	long double cost = 0.0L;
-	for(int x = 0; x < N; x++){
-		for(int y = 0; y < N; y++){	
-			cost += squarel( j[IDX(x,y,N)].x - eq_current[IDX(x,y,N)].x * (rho[IDX(x,y,N)] + rho[IDX(x, y +1, N )]))/ eq_activity[IDX(x,y,N)].x   + squarel( j[IDX(x,y,N)].y - eq_current[IDX(x,y,N)].y * (rho[IDX(x,y,N)] + rho[IDX(x+1, y , N )]))/eq_activity[IDX(x,y,N)].y; 
-		}
-	}	
-	return cost/2.0; 
+// Dissipation potential consistent with the inequality for quadratic entropy
+// where h(r) = (r-1)^2, so h'(r) = 2(r-1) and Delta h' = 2 * (r_j - r_i).
+// The dissipation per edge is (1/2) * A_eq * |Delta h'|^2 = 2 * A_eq * (r_j - r_i)^2.
+//
+// Uses Kahan compensated summation to reduce rounding error.
+long double dissipation_potential(Activity *eq_activity, long double *rho, int N){
+    long double sum = 0.0L, comp = 0.0L;
+    for (int x = 0; x < N; ++x) {
+        for (int y = 0; y < N; ++y) {
+            int idx = IDX(x,y,N);
+
+            // east edge: (x,y) -> (x, y+1)
+            long double Ax = eq_activity[idx].x;
+            long double r_i = rho[idx];
+            long double r_j = rho[IDX(x, y+1, N)];
+            long double dr = r_j - r_i;
+            long double term_x = 0.0L;
+            if (Ax > 0.0L) {
+                // (1/2) * A * (Delta h')^2 = (1/2) * A * (2 dr)^2 = 2 * A * dr^2
+                term_x = 2.0L * Ax * dr * dr;
+            }
+
+            // north edge: (x,y) -> (x+1, y)
+            long double Ay = eq_activity[idx].y;
+            long double r_i2 = rho[idx];
+            long double r_j2 = rho[IDX(x+1, y, N)];
+            long double dry = r_j2 - r_i2;
+            long double term_y = 0.0L;
+            if (Ay > 0.0L) {
+                term_y = 2.0L * Ay * dry * dry;
+            }
+
+            kahan_add(term_x + term_y, &sum, &comp);
+        }
+    }
+    return 0.5L*sum; // note: already summed with the 1/2*(Delta h')^2 factor -> returns full D
 }
 
-// symm_current is the equilibrium symmetric current. 
-long double dissipation_potential( Activity *eq_activity, long double *rho,  int N){
-	long double diss = 0; 
-	for(int x = 0; x < N; x++){
-		for(int y = 0; y < N; y++){
-			diss += eq_activity[IDX(x,y,N)].x * squarel(rho[IDX(x, y+1, N)] - rho[IDX(x,y, N )]) + eq_activity[IDX(x ,y, N )].y * squarel(rho[IDX(x +1 , y,N )] - rho[IDX(x,y,N)]); 
-		}
-	}
-	return diss/2; 
-}
+
+//
+//long double dissipation_potential(Activity *eq_activity, long double *rho, int N){
+//    long double sum = 0.0L, comp = 0.0L;
+//
+//    for(int x = 0; x < N; x++){
+//        for(int y = 0; y < N; y++){
+//            long double Ax = eq_activity[IDX(x,y,N)].x;
+//            long double Ay = eq_activity[IDX(x,y,N)].y;
+//
+//            long double drx = rho[IDX(x, y+1, N)] - rho[IDX(x, y, N)];
+//            long double dry = rho[IDX(x+1, y, N)] - rho[IDX(x, y, N)];
+//
+//            long double term = (Ax > 0.0L ? Ax * drx * drx : 0.0L)
+//                             + (Ay > 0.0L ? Ay * dry * dry : 0.0L);
+//
+//            kahan_add(term, &sum, &comp);
+//        }
+//    }
+//    return 0.5L * sum;
+//}
+//
 
 // The distance (discontinuous at the boundary )
 //double distance( int x, int y, int a, int b ){
@@ -1321,3 +1321,208 @@ void animate_particles(const char *dirname, int num_particles, int grid_size) {
         fprintf(stderr, "Command: %s\n", command);
     }
 }
+
+
+
+
+void divide_vector(Vector *vec, double scalar, int N ){
+	for(int i= 0; i < N*N; i++){
+		vec[i].north = vec[i].north/scalar; 
+		vec[i].south = vec[i].south/scalar; 
+		vec[i].east = vec[i].east/scalar; 
+		vec[i].west = vec[i].west/scalar; 
+	}
+}
+
+void divide_form(Form *curr, long double scalar, int N){
+	for(int i = 0; i < N*N; i++){
+		curr[i].x = curr[i].x/scalar; 
+		curr[i].y = curr[i].y/scalar; 
+	}
+}
+
+//
+//
+//void plot_entropy_dissipation_inequlaity(const char *dirname) {
+//    // Build command safely
+//    char command[PATH_MAX * 2];
+//    snprintf(command, sizeof(command), 
+//             "python3 dissipation.py");
+//
+//    // Execute command
+//    printf("Executing: %s\n", command);
+//    int ret = system(command);
+//    if (ret != 0) {
+//        fprintf(stderr, "Failed to run animate_particles.py (exit code: %d)\n", ret);
+//        fprintf(stderr, "Command: %s\n", command);
+//    }
+//}
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////// QUANTITIELS FUNCTIONS THAT QUANTIFY THE CONVERGENCE/////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////// DEBUG  /////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+// assume: NN = N*N, total_time (double), c (long double), m_beta[i] (long double)
+// arrays: Nplus_x[idx], Nminus_x[idx] for +x and -x transitions (or general edges)
+// for simplicity I'll show horizontal edges only; repeat for vertical.
+
+void diagnose_currents(long double *m_beta, long double *rho,  Form *empirical_current, Form *eq_current, int N ) {
+	long double  NN = N*N;
+	long double sum_weighted_res2 = 0.0L, comp = 0.0L; // Kahan
+	long double max_abs_res = 0.0L;
+	int max_idx1 = -1;
+	int max_idx2 = -1; 
+	for (int x = 0; x < N; x++) {
+		for( int y = 0; y < N; y++){	 
+			long double mi = m_beta[IDX(x,y,N)]/NN;
+			long double mj = m_beta[IDX(x, y+1, N )]/NN;
+			long double s = +1.0L; // for +x edge
+			//long double J_eq  = 2.0L * s * c * sqrtl(mi*mj);  // must match your m_beta scale
+			long double res = empirical_current[IDX(x,y,N)].x - 0.5L*eq_current[IDX(x,y,N)].x*(rho[IDX(x,y,N)] + rho[IDX(x,y+1,N)]);
+			
+			// long double Aeq = /* your activity value for that edge, must be >0 */ sqrtl(mi*mj); // example
+			// weighted residual^2 / Aeq
+			long double Aeq = 2*sqrtl(mi*mj); 
+			long double term = (res*res) / ( Aeq > 0.0L ? Aeq : 1e-300L );
+			// Kahan add
+			long double k = term - comp;
+			long double t = sum_weighted_res2 + k;
+			comp = (t - sum_weighted_res2) - k;
+			sum_weighted_res2 = t;
+
+      			if (fabsl(res) > max_abs_res) { 
+				max_abs_res = fabsl(res); 
+				max_idx1 = x; 
+				max_idx2 = y;
+			 }
+    		}
+	}
+	long double total_cost = sum_weighted_res2;
+	printf("diagnose: total_kinetic_cost (un-normalized) = %.12Lg\n", total_cost);
+	printf("diagnose: max_abs_res = %.6Lg at idx (%d, %d)\n", max_abs_res, max_idx1, max_idx2);
+}
+
+
+
+void current_distances(Form *a, Form *b, int N) {
+    int NN = N*N;
+    long double l1 = 0.0L, l2sq = 0.0L, linf = 0.0L;
+    for (int i = 0; i < NN; i++) {
+        long double dx = a[i].x - b[i].x;
+        long double dy = a[i].y - b[i].y;
+        long double norm = sqrtl(dx*dx + dy*dy); // Euclidean norm at each site
+        l1   += fabsl(norm);
+        l2sq += norm*norm;
+        if (norm > linf) linf = norm;
+    }
+    printf("The L^2 distance is: %Lf\n  The L^infty distance is %Lf\n	The L^1 distance is %Lf\n\n",l2sq, linf,  l1); 
+}
+
+
+void typical_current(Form *J_typ, Vector *rates, double *empirical_measure, double time_step,  int N  ){
+	for(int x = 0; x < N; x++){
+		for(int y = 0; y < N; y++){
+			J_typ[IDX(x,y,N)].x =  (empirical_measure[IDX(x,y,N)] * rates[IDX(x,y,N)].east - empirical_measure[IDX(x,y+1, N)] * rates[IDX(x,y+1,N)].west)*time_step;
+			J_typ[IDX(x,y,N)].y =  (empirical_measure[IDX(x,y,N)] * rates[IDX(x,y,N)].north - empirical_measure[IDX(x+1,y, N)] * rates[IDX(x+1,y,N)].south)*time_step;
+		}
+	}
+}
+
+
+void normalize_empirical_measure(double *empirical_measure, int resolution,  int N_particles,  int NN  ){
+	int a = NN/resolution; 
+	for (int i = 0; i < NN; i++){
+		empirical_measure[i] = (empirical_measure[i])/((double)(N_particles* a) ); 
+	}
+}
+
+void normalize_empirical_flow(Vector *empirical_flow,  int N_particles,  int dt, int NN  ){
+	for (int i = 0; i < NN; i++){
+		empirical_flow[i].north = (empirical_flow[i].north)/((double)N_particles); 
+		empirical_flow[i].south = (empirical_flow[i].south)/((double)N_particles); 
+		empirical_flow[i].east = (empirical_flow[i].east)/((double)N_particles); 
+		empirical_flow[i].west = (empirical_flow[i].west)/((double)N_particles ); 
+	}
+}
+
+long double relative_entropy(long double *rho, long double *m_beta, int N){
+    long double sum = 0.0L, comp = 0.0L;
+
+    for (int i = 0; i < N*N; i++){
+        long double term = entropy(rho[i]) * m_beta[i];
+        kahan_add(term, &sum, &comp);
+    }
+
+    return sum;
+}
+
+
+void diagnose_kinetic_cost_variants(Form *empirical_current,
+                                    Form *eq_current,
+                                    Activity *eq_activity,
+                                    long double *rho,
+					double time,  
+                                    int N)
+{
+    long double alphas[] = {0.0L,0.25L, 0.5L, 1.0L};
+    int n_alphas = 4;
+
+    for (int a = 0; a < n_alphas; ++a) {
+        long double alpha = alphas[a];
+        long double total_cost = 0.0L;
+        long double comp = 0.0L; // for Kahan summation
+
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < N; ++y) {
+                int idx = IDX(x,y,N);
+
+                // Horizontal edge (x,y) -> (x, y+1)
+                int idx_right = IDX(x, (y+1)%N, N);
+                long double qx = alpha * eq_current[idx].x *
+                                 (rho[idx] + rho[idx_right])*((double)N*N) /((double)time) ;
+                long double jx = empirical_current[idx].x;
+                long double Ax = eq_activity[idx].x > 0.0L ? eq_activity[idx].x : 1e-300L;
+                long double resx = jx - qx;
+                kahan_add((resx*resx)/Ax, &total_cost, &comp);
+
+                // Vertical edge (x,y) -> (x+1, y)
+                int idx_up = IDX((x+1)%N, y, N);
+                long double qy = alpha * eq_current[idx].y *
+                                 (rho[idx] + rho[idx_up])*((double)N*N) /((double)time);
+                long double jy = empirical_current[idx].y;
+                long double Ay = eq_activity[idx].y > 0.0L ? eq_activity[idx].y : 1e-300L;
+                long double resy = jy - qy;
+                kahan_add((resy*resy)/Ay, &total_cost, &comp);
+            }
+        }
+
+        total_cost *= 0.5L; // match your kinetic_cost normalization
+        printf("Kinetic cost with alpha= - %.2Lf : %.12Lg\n",  alpha, total_cost);
+	}
+}
+		
+
+void set_skew_symm_current(Form *skew_symm_current, long double *rho, Form *eq_current,  double dt, int N){
+	for(int x = 0; x < N; x++){
+		for(int y = 0; y < N; y++){
+			skew_symm_current[IDX(x,y,N )].x = 0.5L*(rho[IDX(x,y,N)] + rho[IDX(x,y+1, N)])*eq_current[IDX(x,y,N)].x*dt; 
+			skew_symm_current[IDX(x,y,N )].y = 0.5L*(rho[IDX(x,y,N)] + rho[IDX(x + 1, y, N)])*eq_current[IDX(x,y,N)].y*dt ; 
+		}
+	}
+}
+
+
+
+

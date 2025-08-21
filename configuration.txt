@@ -1,0 +1,7 @@
+N=41
+T=20
+N_particles=100000
+beta= 10
+resolution=10
+
+
